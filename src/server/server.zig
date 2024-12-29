@@ -14,42 +14,73 @@ const SimulatorState = struct {
 
 var global_state = SimulatorState{};
 
-fn handleSimulatorStart(connection: Connection, json_body: []const u8) !void {
-    const ParseContext = struct {
-        tps: u32 = 0,
-        duration_ms: u64 = 0,
-    };
-
-    var parse_ctx = ParseContext{};
-    var json_parser = std.json.Parser.init(std.heap.page_allocator, false);
-    defer json_parser.deinit();
-
-    var tree = try json_parser.parse(json_body);
-    defer tree.deinit();
-
-    const root = tree.root.Object;
-    if (root.get("tps")) |tps_value| {
-        parse_ctx.tps = @intCast(tps_value.Integer);
-    }
-    if (root.get("duration_ms")) |duration_value| {
-        parse_ctx.duration_ms = @intCast(duration_value.Integer);
-    }
-
-    global_state.mutex.lock();
-    defer global_state.mutex.unlock();
-
-    if (global_state.sim != null) {
+fn handleSimulatorStart(connection: Connection, request: Request.Request) !void {
+    if (request.body.len == 0) {
         try Response.sendJSON(connection, .{
             .status = 400,
-            .body = "{\"error\": \"Simulator is already running\"}",
+            .body = "{\"error\": \"Missing request body\"}",
         });
         return;
     }
 
-    try Response.sendJSON(connection, .{
-        .status = 200,
-        .body = "{\"message\": \"Simulation started successfully\"}",
-    });
+    var parse_ctx = struct {
+        tps: u32 = 0,
+        duration_ms: u64 = 0,
+    }{};
+
+    // Parse the JSON request body
+    var tree = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, request.body, .{});
+    defer tree.deinit();
+
+    // Check if the root value is an object
+    if (tree.value != .object) {
+        try Response.sendJSON(connection, .{
+            .status = 400,
+            .body = "{\"error\": \"Invalid JSON: expected an object\"}",
+        });
+        return;
+    }
+
+    // Access the root JSON object
+    const root = tree.value.object;
+
+    // Extract the 'tps' field
+    if (root.get("tps")) |tps_value| {
+        if (tps_value != .integer) {
+            try Response.sendJSON(connection, .{
+                .status = 400,
+                .body = "{\"error\": \"Invalid type for 'tps': expected an integer\"}",
+            });
+            return;
+        }
+        parse_ctx.tps = @intCast(tps_value.integer);
+    } else {
+        try Response.sendJSON(connection, .{
+            .status = 400,
+            .body = "{\"error\": \"Missing 'tps' parameter\"}",
+        });
+        return;
+    }
+
+    // Extract the 'duration_ms' field
+    if (root.get("duration_ms")) |duration_value| {
+        if (duration_value != .integer) {
+            try Response.sendJSON(connection, .{
+                .status = 400,
+                .body = "{\"error\": \"Invalid type for 'duration_ms': expected an integer\"}",
+            });
+            return;
+        }
+        parse_ctx.duration_ms = @intCast(duration_value.integer);
+    } else {
+        try Response.sendJSON(connection, .{
+            .status = 400,
+            .body = "{\"error\": \"Missing 'duration_ms' parameter\"}",
+        });
+        return;
+    }
+
+    // ... rest of the handler remains the same
 }
 
 fn handleSimulatorStop(connection: Connection) !void {
@@ -136,7 +167,7 @@ pub fn start() !void {
             }
         } else if (request.method == Method.POST) {
             if (std.mem.eql(u8, request.uri, "/start")) {
-                try handleSimulatorStart(connection, request.body);
+                try handleSimulatorStart(connection, request);
             } else if (std.mem.eql(u8, request.uri, "/stop")) {
                 try handleSimulatorStop(connection);
             } else {
